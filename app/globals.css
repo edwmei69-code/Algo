@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.algo-card {
+  background-color: #13131f;
+  border: 1px solid #1e1e30;
+  border-radius: 1rem;
+}
+.algo-btn-primary {
+  background-color: #6c63ff;
+  color: white;
+  font-weight: 600;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.75rem;
+  transition: all 0.2s;
+  border: none;
+  cursor: pointer;
+}
+.algo-btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+.algo-btn-ghost {
+  border: 1px solid #1e1e30;
+  color: #7070a0;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.75rem;
+  transition: all 0.2s;
+  background: transparent;
+  cursor: pointer;
+}
+.algo-input {
+  background-color: #0f0f1a;
+  border: 1px solid #1e1e30;
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  color: #e8e8f0;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.algo-input:focus { border-color: #6c63ff; }
+
+.gradient-text {
+  background: linear-gradient(135deg, #6c63ff, #ff6584, #43e97b);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.animate-fade-up { animation: fadeUp 0.6s ease forwards; }
+.animate-fade-in { animation: fadeIn 0.4s ease forwards; }
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
