@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useChat } from "@/hooks/useChat";
-import { VideoChat } from "@/components/chat/VideoChat";
+import { useWebRTC } from "@/hooks/useWebRTC";
 import { RateMatch } from "@/components/chat/RateMatch";
 import { endRoom } from "@/lib/matching";
 import { recordChatCompletion } from "@/lib/competitive";
@@ -16,10 +16,15 @@ import {
   SkipForward,
   Flag,
   Ban,
-  ChevronLeft,
-  Circle,
+  Mic,
+  MicOff,
   Video,
+  VideoOff,
+  PhoneOff,
+  ChevronRight,
+  ChevronLeft,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export default function ChatPage() {
   const params = useParams();
@@ -36,13 +41,25 @@ export default function ChatPage() {
   const [showReport, setShowReport] = useState(false);
   const [isEnded, setIsEnded] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [showVideo, setShowVideo] = useState(false);
   const [showRating, setShowRating] = useState(false);
+  const [chatOpen, setChatOpen] = useState(true);
 
   const { messages, sendMessage, broadcastTyping, partnerTyping } = useChat(
     roomId,
     currentUser?.id || ""
   );
+
+  const {
+    status: videoStatus,
+    localVideoRef,
+    remoteVideoRef,
+    isMuted,
+    isCameraOff,
+    startCall,
+    endCall,
+    toggleMute,
+    toggleCamera,
+  } = useWebRTC(roomId, currentUser?.id || "", partner?.id || "");
 
   // Load room and profiles
   useEffect(() => {
@@ -51,10 +68,7 @@ export default function ChatPage() {
       if (!user) { router.push("/auth/login"); return; }
 
       const { data: roomData } = await supabase
-        .from("rooms")
-        .select("*")
-        .eq("id", roomId)
-        .single();
+        .from("rooms").select("*").eq("id", roomId).single();
 
       if (!roomData) { router.push("/main/match"); return; }
       setRoom(roomData);
@@ -75,23 +89,26 @@ export default function ChatPage() {
     load();
   }, [roomId]);
 
+  // Auto-start video when both users are loaded
+  useEffect(() => {
+    if (currentUser && partner && !isEnded) {
+      startCall();
+    }
+  }, [currentUser?.id, partner?.id]);
+
   // Subscribe to room status changes
   useEffect(() => {
     if (!roomId) return;
     const channel = supabase
       .channel(`room-status:${roomId}`)
-      .on(
-        "postgres_changes",
+      .on("postgres_changes",
         { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
-        (payload) => {
-          if (payload.new.status === "ended") setIsEnded(true);
-        }
-      )
-      .subscribe();
+        (payload) => { if (payload.new.status === "ended") setIsEnded(true); }
+      ).subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [roomId]);
 
-  // Auto-scroll to bottom
+  // Auto-scroll chat
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, partnerTyping]);
@@ -105,6 +122,7 @@ export default function ChatPage() {
 
   const handleSkip = async () => {
     if (!currentUser || !room) return;
+    endCall();
     await endRoom(roomId, currentUser.id);
     await recordChatCompletion(currentUser.id);
     setShowRating(true);
@@ -112,6 +130,7 @@ export default function ChatPage() {
 
   const handleBlock = async () => {
     if (!currentUser || !partner) return;
+    endCall();
     await supabase.from("blocks").upsert({
       blocker_id: currentUser.id,
       blocked_id: partner.id,
@@ -120,193 +139,203 @@ export default function ChatPage() {
     router.push("/main/match");
   };
 
-  const handleTyping = () => {
-    broadcastTyping();
-  };
-
   if (loading) {
     return (
-      <div className="min-h-screen bg-algo-bg flex items-center justify-center">
-        <span className="animate-spin w-8 h-8 border-2 border-algo-accent/30 border-t-algo-accent rounded-full" />
+      <div className="min-h-screen bg-[#080810] flex items-center justify-center">
+        <span className="animate-spin w-8 h-8 border-2 border-[#6c63ff]/30 border-t-[#6c63ff] rounded-full" />
       </div>
     );
   }
 
   return (
-    <div className="h-screen bg-algo-bg flex flex-col">
-      {/* Chat header */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-algo-border bg-algo-surface/80 backdrop-blur-md z-10">
-        <button
-          onClick={() => router.push("/main/match")}
-          className="text-algo-text-muted hover:text-algo-text transition-colors p-1"
-        >
-          <ChevronLeft className="w-5 h-5" />
-        </button>
+    <div className="h-screen bg-[#080810] flex overflow-hidden">
 
-        {/* Partner info */}
-        <div className="flex items-center gap-2.5 flex-1">
-          <div
-            className="w-9 h-9 rounded-full flex items-center justify-center font-display font-bold text-sm shrink-0"
-            style={{ background: partner ? avatarColor(partner.username) : "#6c63ff" }}
-          >
-            {partner ? getInitials(partner.username) : "?"}
-          </div>
-          <div>
-            <p className="font-display font-semibold text-sm">
-              {partner?.username || "Stranger"}
-            </p>
-            <div className="flex items-center gap-1">
-              <Circle className="w-1.5 h-1.5 fill-algo-accent-3 text-algo-accent-3" />
-              <span className="text-xs text-algo-text-muted">
-                {isEnded
-                  ? "Chat ended"
-                  : partnerTyping
-                  ? "typing…"
-                  : "online"}
-              </span>
-            </div>
-          </div>
-        </div>
+      {/* ── VIDEO AREA (main) ── */}
+      <div className="relative flex-1 bg-black">
 
-        {/* Actions */}
-        {!isEnded && (
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setShowVideo(true)}
-              className="p-2 rounded-xl text-algo-text-muted hover:text-algo-accent-3 hover:bg-[#43e97b]/10 transition-all"
-              title="Video call"
-            >
-              <Video className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setShowReport(true)}
-              className="p-2 rounded-xl text-algo-text-muted hover:text-yellow-400 hover:bg-yellow-400/10 transition-all"
-              title="Report user"
-            >
-              <Flag className="w-4 h-4" />
-            </button>
-            <button
-              onClick={handleBlock}
-              className="p-2 rounded-xl text-algo-text-muted hover:text-red-400 hover:bg-red-400/10 transition-all"
-              title="Block user"
-            >
-              <Ban className="w-4 h-4" />
-            </button>
-            <button
-              onClick={handleSkip}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-algo-card border border-algo-border text-algo-text-muted hover:text-algo-text hover:border-algo-muted text-sm transition-all"
-            >
-              <SkipForward className="w-3.5 h-3.5" /> Skip
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Ended banner */}
-      {isEnded && (
-        <div className="bg-algo-card border-b border-algo-border px-4 py-3 text-center text-sm text-algo-text-muted">
-          This chat has ended.{" "}
-          <button
-            onClick={() => router.push("/main/match")}
-            className="text-algo-accent hover:underline"
-          >
-            Find a new match
-          </button>
-        </div>
-      )}
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
-        {messages.length === 0 && !isEnded && (
-          <div className="flex-1 flex flex-col items-center justify-center text-center py-16">
-            <span className="text-4xl mb-3">👋</span>
-            <p className="font-display font-semibold text-algo-text mb-1">
-              You matched with {partner?.username || "someone"}!
-            </p>
-            <p className="text-algo-text-muted text-sm">Say something. They&apos;re waiting.</p>
-          </div>
-        )}
-
-        {messages.map((msg) => (
-          <MessageBubble
-            key={msg.id}
-            message={msg}
-            isOwn={msg.sender_id === currentUser?.id}
-            senderUsername={
-              msg.sender_id === currentUser?.id
-                ? currentUser?.username
-                : partner?.username
-            }
+        {/* Remote video */}
+        {videoStatus === "connected" ? (
+          <video
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            className="w-full h-full object-cover"
           />
-        ))}
-
-        {/* Typing indicator */}
-        {partnerTyping && !isEnded && (
-          <div className="flex items-end gap-2 animate-fade-in">
+        ) : (
+          <div className="w-full h-full flex flex-col items-center justify-center gap-4 bg-[#080810]">
             <div
-              className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-display font-bold shrink-0"
+              className="w-24 h-24 rounded-full flex items-center justify-center font-bold text-2xl"
               style={{ background: partner ? avatarColor(partner.username) : "#6c63ff" }}
             >
               {partner ? getInitials(partner.username) : "?"}
             </div>
-            <div className="bg-algo-card border border-algo-border rounded-2xl rounded-bl-sm px-4 py-3 flex gap-1">
-              {[0, 1, 2].map((i) => (
-                <span
-                  key={i}
-                  className="w-1.5 h-1.5 rounded-full bg-algo-text-muted animate-bounce"
-                  style={{ animationDelay: `${i * 0.15}s` }}
-                />
+            <p className="text-white font-semibold text-lg">
+              {videoStatus === "calling" ? `Calling ${partner?.username}…` : `Connecting to ${partner?.username}…`}
+            </p>
+            <div className="flex gap-1">
+              {[0,1,2].map(i => (
+                <span key={i} className="w-2 h-2 rounded-full bg-[#6c63ff] animate-bounce"
+                  style={{ animationDelay: `${i * 0.15}s` }} />
               ))}
             </div>
           </div>
         )}
 
-        <div ref={bottomRef} />
+        {/* Local video PiP */}
+        <div className="absolute bottom-24 right-4 w-28 h-40 rounded-2xl overflow-hidden border-2 border-white/20 shadow-2xl">
+          <video
+            ref={localVideoRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full h-full object-cover"
+          />
+          {isCameraOff && (
+            <div className="absolute inset-0 bg-[#13131f] flex items-center justify-center">
+              <VideoOff className="w-5 h-5 text-[#7070a0]" />
+            </div>
+          )}
+        </div>
+
+        {/* Partner name tag */}
+        <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/50 backdrop-blur-sm rounded-full px-3 py-1.5">
+          <span className="w-2 h-2 rounded-full bg-[#43e97b] animate-pulse" />
+          <span className="text-white text-sm font-semibold">{partner?.username || "Stranger"}</span>
+        </div>
+
+        {/* Controls bar */}
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3">
+          <button
+            onClick={toggleMute}
+            className={cn(
+              "w-12 h-12 rounded-full flex items-center justify-center transition-all",
+              isMuted ? "bg-red-500 text-white" : "bg-white/20 backdrop-blur-sm text-white hover:bg-white/30"
+            )}
+          >
+            {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+          </button>
+
+          <button
+            onClick={handleSkip}
+            className="w-14 h-14 rounded-full bg-red-500 flex items-center justify-center text-white hover:bg-red-600 transition-all shadow-lg"
+          >
+            <PhoneOff className="w-6 h-6" />
+          </button>
+
+          <button
+            onClick={toggleCamera}
+            className={cn(
+              "w-12 h-12 rounded-full flex items-center justify-center transition-all",
+              isCameraOff ? "bg-red-500 text-white" : "bg-white/20 backdrop-blur-sm text-white hover:bg-white/30"
+            )}
+          >
+            {isCameraOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
+          </button>
+
+          {/* Report/block */}
+          <button
+            onClick={() => setShowReport(true)}
+            className="w-10 h-10 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center text-white/70 hover:text-yellow-400 transition-all"
+          >
+            <Flag className="w-4 h-4" />
+          </button>
+
+          <button
+            onClick={handleBlock}
+            className="w-10 h-10 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center text-white/70 hover:text-red-400 transition-all"
+          >
+            <Ban className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Chat toggle button */}
+        <button
+          onClick={() => setChatOpen(!chatOpen)}
+          className="absolute top-1/2 right-0 -translate-y-1/2 w-6 h-12 bg-[#13131f] border border-[#1e1e30] rounded-l-xl flex items-center justify-center text-[#7070a0] hover:text-white transition-colors z-10"
+        >
+          {chatOpen ? <ChevronRight className="w-3 h-3" /> : <ChevronLeft className="w-3 h-3" />}
+        </button>
       </div>
 
-      {/* Input */}
-      {!isEnded && (
-        <div className="px-4 py-3 border-t border-algo-border bg-algo-surface/80 backdrop-blur-md">
-          <div className="flex items-center gap-2 max-w-3xl mx-auto">
+      {/* ── CHAT PANEL (side) ── */}
+      <div className={cn(
+        "flex flex-col bg-[#0f0f1a] border-l border-[#1e1e30] transition-all duration-300",
+        chatOpen ? "w-72" : "w-0 overflow-hidden"
+      )}>
+        {/* Chat header */}
+        <div className="px-4 py-3 border-b border-[#1e1e30] flex items-center justify-between shrink-0">
+          <span className="text-sm font-semibold text-white">Chat</span>
+          {isEnded && (
+            <span className="text-xs text-red-400">Ended</span>
+          )}
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2">
+          {messages.length === 0 && (
+            <p className="text-[#7070a0] text-xs text-center mt-4">
+              Say something while you chat 👋
+            </p>
+          )}
+          {messages.map((msg) => (
+            <MessageBubble
+              key={msg.id}
+              message={msg}
+              isOwn={msg.sender_id === currentUser?.id}
+              senderUsername={
+                msg.sender_id === currentUser?.id
+                  ? currentUser?.username
+                  : partner?.username
+              }
+            />
+          ))}
+          {partnerTyping && (
+            <div className="flex gap-1 px-2">
+              {[0,1,2].map(i => (
+                <span key={i} className="w-1.5 h-1.5 rounded-full bg-[#7070a0] animate-bounce"
+                  style={{ animationDelay: `${i * 0.15}s` }} />
+              ))}
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Input */}
+        {!isEnded && (
+          <div className="px-3 py-3 border-t border-[#1e1e30] flex gap-2 shrink-0">
             <input
               ref={inputRef}
-              className="algo-input flex-1"
-              placeholder="Say something…"
+              className="flex-1 bg-[#13131f] border border-[#1e1e30] rounded-xl px-3 py-2 text-[#e8e8f0] text-sm placeholder:text-[#7070a0] focus:outline-none focus:border-[#6c63ff] transition-colors"
+              placeholder="Type…"
               value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                handleTyping();
-              }}
+              onChange={(e) => { setInput(e.target.value); broadcastTyping(); }}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                }
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
               }}
               maxLength={2000}
             />
             <button
               onClick={handleSend}
               disabled={!input.trim()}
-              className="w-11 h-11 rounded-xl bg-algo-accent flex items-center justify-center text-white transition-all hover:bg-opacity-80 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+              className="w-9 h-9 rounded-xl bg-[#6c63ff] flex items-center justify-center text-white disabled:opacity-40 shrink-0"
             >
-              <Send className="w-4 h-4" />
+              <Send className="w-3.5 h-3.5" />
             </button>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* New match button when ended */}
-      {isEnded && (
-        <div className="px-4 py-4 border-t border-algo-border">
-          <button
-            onClick={() => router.push("/main/match")}
-            className="algo-btn-primary w-full py-4 flex items-center justify-center gap-2"
-          >
-            <SkipForward className="w-4 h-4" /> Find a new match
-          </button>
-        </div>
-      )}
+        {/* New match button */}
+        {isEnded && (
+          <div className="px-3 py-3 border-t border-[#1e1e30] shrink-0">
+            <button
+              onClick={() => router.push("/main/match")}
+              className="w-full py-2.5 rounded-xl bg-[#6c63ff] text-white text-sm font-semibold flex items-center justify-center gap-2"
+            >
+              <SkipForward className="w-3.5 h-3.5" /> New match
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Report modal */}
       {showReport && currentUser && partner && (
@@ -315,21 +344,7 @@ export default function ChatPage() {
           reportedId={partner.id}
           reporterId={currentUser.id}
           onClose={() => setShowReport(false)}
-          onSuccess={() => {
-            setShowReport(false);
-            handleSkip();
-          }}
-        />
-      )}
-
-      {/* Video chat */}
-      {showVideo && currentUser && partner && (
-        <VideoChat
-          roomId={roomId}
-          userId={currentUser.id}
-          partnerId={partner.id}
-          partnerUsername={partner.username}
-          onClose={() => setShowVideo(false)}
+          onSuccess={() => { setShowReport(false); handleSkip(); }}
         />
       )}
 
@@ -340,10 +355,7 @@ export default function ChatPage() {
           raterId={currentUser.id}
           ratedId={partner.id}
           ratedUsername={partner.username}
-          onDone={() => {
-            setShowRating(false);
-            router.push("/main/match");
-          }}
+          onDone={() => { setShowRating(false); router.push("/main/match"); }}
         />
       )}
     </div>
